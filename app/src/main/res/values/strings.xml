@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">LocateMe</string>
+    <string name="app_title">Location Finder</string>
+    <string name="latitude_label">Latitude</string>
+    <string name="longitude_label">Longitude</string>
+    <string name="default_location_value">0.0</string>
+    <string name="btn_get_location">Get Location</string>
+</resources>
