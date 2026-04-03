@@ -24,22 +24,27 @@ import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.OnMapReadyCallback
+import com.google.android.gms.maps.SupportMapFragment
+import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * Professional-grade Location Finder Activity.
- * Features: High-accuracy location fetching, UI state management, 
- * data formatting, and sharing/copying functionality.
+ * Professional-grade Location Finder Activity with Google Maps integration.
  */
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private var googleMap: GoogleMap? = null
 
-    // Store the last fetched location for copy/share functionality
+    // Store the last fetched location for map and share functionality
     private var lastFetchedLocation: Location? = null
 
     // Activity Result Launcher for Location Permissions
@@ -63,17 +68,28 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         setContentView(binding.root)
 
-        // Handle System UI Overlays (Edge-to-Edge)
+        // Handle System UI Overlays
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
             insets
         }
 
+        // Initialize Google Map
+        val mapFragment = supportFragmentManager.findFragmentById(R.id.map) as SupportMapFragment
+        mapFragment.getMapAsync(this)
+
         // Initialize FusedLocationProviderClient
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         initClickListeners()
+    }
+
+    override fun onMapReady(map: GoogleMap) {
+        googleMap = map
+        // Enable basic UI controls on map
+        googleMap?.uiSettings?.isZoomControlsEnabled = true
+        googleMap?.uiSettings?.isCompassEnabled = true
     }
 
     private fun initClickListeners() {
@@ -110,10 +126,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Step 1: Try getLastLocation (Cache)
-     * Step 2: Fallback to getCurrentLocation (Fresh Fix)
-     */
     private fun startLocationFetch() {
         if (!isPermissionGranted()) return
 
@@ -161,16 +173,26 @@ class MainActivity : AppCompatActivity() {
 
         lastFetchedLocation = location
 
-        // Format and display coordinates (6 decimal places)
+        // Update Text Info
         binding.tvLatitude.text = String.format(Locale.US, "%.6f", location.latitude)
         binding.tvLongitude.text = String.format(Locale.US, "%.6f", location.longitude)
-
-        // Display Accuracy
         binding.tvAccuracy.text = String.format(Locale.US, "± %.1f m", location.accuracy)
 
-        // Display Readable Timestamp
         val sdf = SimpleDateFormat("HH:mm:ss, dd MMM", Locale.getDefault())
         binding.tvTimestamp.text = sdf.format(Date(location.time))
+
+        // Update Map Marker and Camera
+        updateMap(location)
+    }
+
+    private fun updateMap(location: Location) {
+        val latLng = LatLng(location.latitude, location.longitude)
+        
+        googleMap?.apply {
+            clear() // Remove old markers
+            addMarker(MarkerOptions().position(latLng).title("You are here"))
+            animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 15f))
+        }
     }
 
     private fun copyToClipboard() {
@@ -184,8 +206,7 @@ class MainActivity : AppCompatActivity() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = ClipData.newPlainText("Location", textToCopy)
         clipboard.setPrimaryClip(clip)
-        
-        showToast("Location copied to clipboard!")
+        showToast("Location copied!")
     }
 
     private fun shareLocation() {
@@ -211,7 +232,6 @@ class MainActivity : AppCompatActivity() {
         binding.progressBar.visibility = if (isLoading) View.VISIBLE else View.INVISIBLE
     }
 
-    // Permission Helpers
     private fun isPermissionGranted() = ContextCompat.checkSelfPermission(
         this, Manifest.permission.ACCESS_FINE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
@@ -223,7 +243,7 @@ class MainActivity : AppCompatActivity() {
     private fun showRationaleDialog() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Permission Required")
-            .setMessage("Location access is required to show your coordinates and accuracy.")
+            .setMessage("Location access is required to show your coordinates on the map.")
             .setPositiveButton("Grant") { _, _ ->
                 requestPermissionLauncher.launch(
                     arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -237,7 +257,7 @@ class MainActivity : AppCompatActivity() {
         if (!shouldShowRationale()) {
             MaterialAlertDialogBuilder(this)
                 .setTitle("Permission Denied")
-                .setMessage("Please enable location permissions in App Settings to use this feature.")
+                .setMessage("Please enable location permissions in App Settings.")
                 .setPositiveButton("Settings") { _, _ ->
                     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                         data = Uri.fromParts("package", packageName, null)
