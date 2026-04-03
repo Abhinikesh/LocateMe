@@ -1,13 +1,14 @@
 package com.example.locateme
 
 import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Address
+import android.location.Geocoder
 import android.location.Location
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
@@ -36,18 +37,15 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Professional-grade Location Finder Activity with Google Maps integration.
+ * Professional Location App with Google Maps and Reverse Geocoding.
  */
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var fusedLocationClient: FusedLocationProviderClient
-    private var googleMap: GoogleMap? = null
+    private var mMap: GoogleMap? = null
 
-    // Store the last fetched location for map and share functionality
-    private var lastFetchedLocation: Location? = null
-
-    // Activity Result Launcher for Location Permissions
+    // Permission Launcher
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -55,7 +53,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val coarseGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
 
         if (fineGranted || coarseGranted) {
-            startLocationFetch()
+            enableMyLocationLayer()
+            fetchLocationFlow()
         } else {
             setLoadingState(false)
             handlePermanentDenial()
@@ -68,169 +67,153 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         enableEdgeToEdge()
         setContentView(binding.root)
 
-        // Handle System UI Overlays
+        // Adjust for system bars
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
             insets
         }
 
-        // Initialize Google Map
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
+        // Initialize Map
         val mapFragment = supportFragmentManager.findFragmentById(R.id.map) as SupportMapFragment
         mapFragment.getMapAsync(this)
 
-        // Initialize FusedLocationProviderClient
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-
-        initClickListeners()
-    }
-
-    override fun onMapReady(map: GoogleMap) {
-        googleMap = map
-        // Enable basic UI controls on map
-        googleMap?.uiSettings?.isZoomControlsEnabled = true
-        googleMap?.uiSettings?.isCompassEnabled = true
-    }
-
-    private fun initClickListeners() {
-        binding.btnGetLocation.setOnClickListener {
+        binding.btnRefresh.setOnClickListener {
             checkPermissionsAndFetch()
         }
+    }
 
-        binding.btnCopy.setOnClickListener {
-            copyToClipboard()
-        }
+    override fun onMapReady(googleMap: GoogleMap) {
+        mMap = googleMap
+        mMap?.uiSettings?.isZoomControlsEnabled = true
+        
+        // Try to enable the blue dot layer if permission exists
+        enableMyLocationLayer()
+        
+        // Initial fetch
+        checkPermissionsAndFetch()
+    }
 
-        binding.btnShare.setOnClickListener {
-            shareLocation()
+    @SuppressLint("MissingPermission")
+    private fun enableMyLocationLayer() {
+        if (isPermissionGranted()) {
+            mMap?.isMyLocationEnabled = true
         }
     }
 
     private fun checkPermissionsAndFetch() {
         setLoadingState(true)
         when {
-            isPermissionGranted() -> {
-                startLocationFetch()
-            }
-            shouldShowRationale() -> {
-                showRationaleDialog()
-            }
-            else -> {
-                requestPermissionLauncher.launch(
-                    arrayOf(
-                        Manifest.permission.ACCESS_FINE_LOCATION,
-                        Manifest.permission.ACCESS_COARSE_LOCATION
-                    )
-                )
-            }
+            isPermissionGranted() -> fetchLocationFlow()
+            shouldShowRationale() -> showRationaleDialog()
+            else -> launchPermissionRequest()
         }
     }
 
-    private fun startLocationFetch() {
-        if (!isPermissionGranted()) return
-
-        try {
-            fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
-                if (location != null && isRecent(location)) {
-                    updateUI(location)
-                } else {
-                    requestFreshLocation()
-                }
-            }.addOnFailureListener {
+    /**
+     * Modern Location Fetch Flow:
+     * 1. Try last known location (fastest)
+     * 2. If null (common in emulators), request a fresh fix using getCurrentLocation
+     */
+    @SuppressLint("MissingPermission")
+    private fun fetchLocationFlow() {
+        fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+            if (location != null) {
+                processNewLocation(location)
+            } else {
+                // Fallback for emulator or fresh device
                 requestFreshLocation()
             }
-        } catch (e: SecurityException) {
-            setLoadingState(false)
-            showToast("Security Exception: ${e.localizedMessage}")
+        }.addOnFailureListener {
+            requestFreshLocation()
         }
     }
 
+    @SuppressLint("MissingPermission")
     private fun requestFreshLocation() {
         val request = CurrentLocationRequest.Builder()
             .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
             .build()
 
-        try {
-            fusedLocationClient.getCurrentLocation(request, null)
-                .addOnSuccessListener { location: Location? ->
-                    updateUI(location)
-                }
-                .addOnFailureListener { e ->
+        fusedLocationClient.getCurrentLocation(request, null)
+            .addOnSuccessListener { location ->
+                if (location != null) {
+                    processNewLocation(location)
+                } else {
                     setLoadingState(false)
-                    showToast("Failed to fetch location: ${e.localizedMessage}")
+                    binding.tvAddress.text = "Location not found. Enable GPS."
                 }
-        } catch (e: SecurityException) {
-            setLoadingState(false)
-        }
+            }
+            .addOnFailureListener {
+                setLoadingState(false)
+                Toast.makeText(this, "Failed to get location", Toast.LENGTH_SHORT).show()
+            }
     }
 
-    private fun updateUI(location: Location?) {
+    /**
+     * Updates Map, Address, and Timestamp
+     */
+    private fun processNewLocation(location: Location) {
         setLoadingState(false)
-        if (location == null) {
-            showToast("Unable to fetch location. Please ensure GPS is ON.")
-            return
-        }
-
-        lastFetchedLocation = location
-
-        // Update Text Info
-        binding.tvLatitude.text = String.format(Locale.US, "%.6f", location.latitude)
-        binding.tvLongitude.text = String.format(Locale.US, "%.6f", location.longitude)
-        binding.tvAccuracy.text = String.format(Locale.US, "± %.1f m", location.accuracy)
-
-        val sdf = SimpleDateFormat("HH:mm:ss, dd MMM", Locale.getDefault())
-        binding.tvTimestamp.text = sdf.format(Date(location.time))
-
-        // Update Map Marker and Camera
-        updateMap(location)
-    }
-
-    private fun updateMap(location: Location) {
         val latLng = LatLng(location.latitude, location.longitude)
-        
-        googleMap?.apply {
-            clear() // Remove old markers
+
+        // 1. Update Map
+        mMap?.apply {
+            clear()
             addMarker(MarkerOptions().position(latLng).title("You are here"))
             animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 15f))
         }
+
+        // 2. Update Timestamp
+        val time = SimpleDateFormat("hh:mm:ss a, dd MMM", Locale.getDefault()).format(Date(location.time))
+        binding.tvTimestamp.text = time
+
+        // 3. Get Address (Reverse Geocoding)
+        fetchAddress(location)
     }
 
-    private fun copyToClipboard() {
-        val loc = lastFetchedLocation
-        if (loc == null) {
-            showToast("No location data to copy")
-            return
-        }
-
-        val textToCopy = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = ClipData.newPlainText("Location", textToCopy)
-        clipboard.setPrimaryClip(clip)
-        showToast("Location copied!")
-    }
-
-    private fun shareLocation() {
-        val loc = lastFetchedLocation
-        if (loc == null) {
-            showToast("No location data to share")
-            return
-        }
-
-        val shareBody = "My Location:\nLatitude: ${loc.latitude}\nLongitude: ${loc.longitude}\n" +
-                "Maps: https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}"
-
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "Current Location")
-            putExtra(Intent.EXTRA_TEXT, shareBody)
-        }
-        startActivity(Intent.createChooser(intent, "Share via"))
+    /**
+     * Reverse Geocoding using Geocoder.
+     * Note: getFromLocation is a blocking call, so we wrap it to avoid UI stutter.
+     */
+    private fun fetchAddress(location: Location) {
+        val geocoder = Geocoder(this, Locale.getDefault())
+        
+        // Using a thread to keep the UI responsive during Geocoding
+        Thread {
+            try {
+                val addresses = geocoder.getFromLocation(location.latitude, location.longitude, 1)
+                runOnUiThread {
+                    if (!addresses.isNullOrEmpty()) {
+                        val address: Address = addresses[0]
+                        val addressText = StringBuilder()
+                        
+                        // Extract City, State, Country
+                        addressText.append(address.locality ?: "Unknown City").append(", ")
+                        addressText.append(address.adminArea ?: "Unknown State").append(", ")
+                        addressText.append(address.countryName ?: "Unknown Country")
+                        
+                        binding.tvAddress.text = addressText.toString()
+                    } else {
+                        binding.tvAddress.text = "Address not found"
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    binding.tvAddress.text = "Service unavailable"
+                }
+            }
+        }.start()
     }
 
     private fun setLoadingState(isLoading: Boolean) {
-        binding.btnGetLocation.isEnabled = !isLoading
+        binding.btnRefresh.isEnabled = !isLoading
         binding.progressBar.visibility = if (isLoading) View.VISIBLE else View.INVISIBLE
     }
+
+    // --- Permission Management ---
 
     private fun isPermissionGranted() = ContextCompat.checkSelfPermission(
         this, Manifest.permission.ACCESS_FINE_LOCATION
@@ -240,15 +223,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         this, Manifest.permission.ACCESS_FINE_LOCATION
     )
 
+    private fun launchPermissionRequest() {
+        requestPermissionLauncher.launch(
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        )
+    }
+
     private fun showRationaleDialog() {
         MaterialAlertDialogBuilder(this)
-            .setTitle("Permission Required")
-            .setMessage("Location access is required to show your coordinates on the map.")
-            .setPositiveButton("Grant") { _, _ ->
-                requestPermissionLauncher.launch(
-                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
-                )
-            }
+            .setTitle("Location Permission")
+            .setMessage("We need location access to show where you are on the map.")
+            .setPositiveButton("Allow") { _, _ -> launchPermissionRequest() }
             .setNegativeButton("Cancel") { _, _ -> setLoadingState(false) }
             .show()
     }
@@ -256,25 +241,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun handlePermanentDenial() {
         if (!shouldShowRationale()) {
             MaterialAlertDialogBuilder(this)
-                .setTitle("Permission Denied")
-                .setMessage("Please enable location permissions in App Settings.")
-                .setPositiveButton("Settings") { _, _ ->
-                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                .setTitle("Settings Required")
+                .setMessage("Permission is permanently denied. Please enable it in Settings.")
+                .setPositiveButton("Open Settings") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                         data = Uri.fromParts("package", packageName, null)
-                    }
-                    startActivity(intent)
+                    })
                 }
                 .setNegativeButton("Cancel", null)
                 .show()
         }
-    }
-
-    private fun isRecent(location: Location): Boolean {
-        val age = System.currentTimeMillis() - location.time
-        return age < 60000 // Less than 1 minute old
-    }
-
-    private fun showToast(message: String) {
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 }
