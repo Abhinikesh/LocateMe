@@ -20,15 +20,15 @@
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:layout_margin="16dp"
-        app:cardCornerRadius="24dp"
-        app:cardElevation="8dp"
+        app:cardCornerRadius="28dp"
+        app:cardElevation="12dp"
         app:strokeWidth="0dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="20dp">
+            android:padding="24dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -36,11 +36,21 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <ImageView
-                    android:layout_width="32dp"
-                    android:layout_height="32dp"
-                    android:src="@android:drawable/ic_dialog_map"
-                    app:tint="?attr/colorPrimary" />
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    app:cardBackgroundColor="?attr/colorPrimaryContainer"
+                    app:cardCornerRadius="12dp"
+                    app:cardElevation="0dp"
+                    app:strokeWidth="0dp">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:layout_gravity="center"
+                        android:src="@android:drawable/ic_dialog_map"
+                        app:tint="?attr/colorPrimary" />
+                </com.google.android.material.card.MaterialCardView>
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -50,10 +60,9 @@
                     android:orientation="vertical">
 
                     <TextView
-                        android:id="@+id/tvAddressTitle"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Current Address"
+                        android:text="Current Location"
                         android:textAppearance="@style/TextAppearance.Material3.LabelLarge"
                         android:textColor="?attr/colorPrimary" />
 
@@ -70,35 +79,38 @@
             <com.google.android.material.divider.MaterialDivider
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginVertical="12dp" />
+                android:layout_marginVertical="16dp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <TextView
-                    android:id="@+id/tvTimestampLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Last Updated: "
-                    android:textAppearance="@style/TextAppearance.Material3.LabelMedium" />
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@android:drawable/ic_menu_recent_history"
+                    app:tint="?attr/colorOnSurfaceVariant" />
 
                 <TextView
                     android:id="@+id/tvTimestamp"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
                     android:text="N/A"
                     android:textAppearance="@style/TextAppearance.Material3.BodySmall"
-                    android:textStyle="bold" />
+                    android:textColor="?attr/colorOnSurfaceVariant" />
             </LinearLayout>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnRefresh"
                 android:layout_width="match_parent"
-                android:layout_height="56dp"
-                android:layout_marginTop="16dp"
+                android:layout_height="60dp"
+                android:layout_marginTop="20dp"
                 android:text="Refresh Location"
+                android:textAllCaps="false"
+                android:textStyle="bold"
                 app:cornerRadius="16dp"
                 app:icon="@android:drawable/ic_menu_rotate" />
 
@@ -106,7 +118,7 @@
                 android:id="@+id/progressBar"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="16dp"
                 android:indeterminate="true"
                 android:visibility="invisible" />
 
