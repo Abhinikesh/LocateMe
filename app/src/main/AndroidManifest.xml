@@ -21,11 +21,7 @@
         <!-- Google Maps API Key -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-<<<<<<< HEAD
-            android:value="       " />
-=======
             android:value="YOUR_API_KEY" />
->>>>>>> 79ec7f6 (locateme current location)
 
         <activity
             android:name=".SplashActivity"
