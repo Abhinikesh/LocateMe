@@ -5,7 +5,8 @@
     <string name="longitude_label">Longitude</string>
     <string name="default_location_value">0.0</string>
     <string name="btn_get_location">Get Location</string>
-    <string name="btn_refresh">Refresh Location</string>
+    <string name="btn_refresh">REFRESH LOCATION</string>
+    <string name="last_updated_label">Last updated: --</string>
     <string name="fetching_place_name">Fetching place name...</string>
     <string name="location_permission_required">Location permission required</string>
     <string name="enable_gps_title">Enable GPS</string>
