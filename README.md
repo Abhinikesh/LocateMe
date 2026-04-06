@@ -41,16 +41,8 @@
 1. Clone the repo and open in Android Studio
 2. Add your Google Maps API key in `AndroidManifest.xml`
 3. Run on device or emulator
-```xml
-<meta-data
-    android:name="com.google.android.geo.API_KEY"
-    android:value="YOUR_API_KEY_HERE" />
-```
 
 ---
-
-## 📄 License
-MIT License — free to use and modify.
 
 <div align="center">
 Made with ❤️ using Kotlin · ⭐ Star if you like it!
