@@ -10,7 +10,9 @@ import android.location.Geocoder
 import android.location.Location
 import android.location.LocationManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.View
@@ -33,6 +35,7 @@ import com.google.android.gms.maps.OnMapReadyCallback
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
+import com.google.android.gms.tasks.CancellationTokenSource
 import com.google.android.material.snackbar.Snackbar
 import java.text.SimpleDateFormat
 import java.util.*
@@ -46,6 +49,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var pulseAnimator: ObjectAnimator? = null
     private var locationCallback: LocationCallback? = null
     private var lastLocation: Location? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var locationReceived = false
+    private var isCameraMovedOnce = false
+    private val cancellationTokenSource = CancellationTokenSource()
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -158,20 +165,26 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     @SuppressLint("MissingPermission")
     private fun setupLocationUpdates() {
         try {
+            locationReceived = false
             setLoadingState(true)
             
-            fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-                location?.let { onLocationReceived(it) }
-            }
+            // Remove previous callbacks to avoid multiple fallbacks
+            handler.removeCallbacksAndMessages(null)
 
-            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5000)
-                .setMinUpdateIntervalMillis(2000)
+            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
+                .setMinUpdateDistanceMeters(0f)
+                .setGranularity(Granularity.GRANULARITY_FINE)
+                .setWaitForAccurateLocation(true)
                 .build()
 
             locationCallback = object : LocationCallback() {
                 override fun onLocationResult(locationResult: LocationResult) {
+                    locationReceived = true
+                    handler.removeCallbacksAndMessages(null)
                     for (location in locationResult.locations) {
-                        onLocationReceived(location)
+                        if (location.accuracy < 50f) {
+                            onLocationReceived(location)
+                        }
                     }
                     setLoadingState(false)
                 }
@@ -182,6 +195,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 locationCallback!!,
                 Looper.getMainLooper()
             )
+
+            // Fallback after 5 seconds if no update received
+            handler.postDelayed({
+                if (!locationReceived) {
+                    fusedLocationClient.getCurrentLocation(
+                        Priority.PRIORITY_HIGH_ACCURACY,
+                        cancellationTokenSource.token
+                    ).addOnSuccessListener { location ->
+                        if (location != null && location.accuracy < 50f) {
+                            onLocationReceived(location)
+                            setLoadingState(false)
+                        }
+                    }
+                }
+            }, 5000L)
         } catch (e: Exception) {
             setLoadingState(false)
             e.printStackTrace()
@@ -210,7 +238,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             mMap?.apply {
                 currentMarker?.remove()
                 currentMarker = addMarker(MarkerOptions().position(latLng).title("You are here"))
-                animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 15f))
+                if (!isCameraMovedOnce) {
+                    animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 15f))
+                    isCameraMovedOnce = true
+                }
             }
 
             reverseGeocode(location)
@@ -223,31 +254,61 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val geocoder = Geocoder(this, Locale.getDefault())
         binding.tvPlaceName.text = getString(R.string.fetching_place_name)
 
-        Thread {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             try {
-                val addresses = geocoder.getFromLocation(location.latitude, location.longitude, 1)
-                runOnUiThread {
-                    if (!addresses.isNullOrEmpty()) {
-                        binding.tvPlaceName.text = addresses[0].getAddressLine(0)
-                    } else {
-                        binding.tvPlaceName.text = getString(R.string.unknown_location)
+                geocoder.getFromLocation(location.latitude, location.longitude, 1, object : Geocoder.GeocodeListener {
+                    override fun onGeocode(addresses: MutableList<android.location.Address>) {
+                        runOnUiThread {
+                            if (!addresses.isNullOrEmpty()) {
+                                binding.tvPlaceName.text = addresses[0].getAddressLine(0)
+                            } else {
+                                binding.tvPlaceName.text = "Unable to fetch address"
+                            }
+                        }
+                    }
+
+                    override fun onError(errorMessage: String?) {
+                        runOnUiThread {
+                            binding.tvPlaceName.text = "Unable to fetch address"
+                        }
+                    }
+                })
+            } catch (e: Exception) {
+                binding.tvPlaceName.text = "Unable to fetch address"
+            }
+        } else {
+            Thread {
+                try {
+                    @Suppress("DEPRECATION")
+                    val addresses = geocoder.getFromLocation(location.latitude, location.longitude, 1)
+                    runOnUiThread {
+                        if (!addresses.isNullOrEmpty()) {
+                            binding.tvPlaceName.text = addresses[0].getAddressLine(0)
+                        } else {
+                            binding.tvPlaceName.text = "Unable to fetch address"
+                        }
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        binding.tvPlaceName.text = "Unable to fetch address"
                     }
                 }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    binding.tvPlaceName.text = getString(R.string.geocoder_error)
-                }
-            }
-        }.start()
+            }.start()
+        }
     }
 
     private fun fetchLocation() {
+        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val isGpsOn = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        val isNetworkOn = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        if (!isGpsOn && !isNetworkOn) {
+            showGpsDisabledDialog()
+            return
+        }
+
+        isCameraMovedOnce = false
         if (hasLocationPermission()) {
-            if (isGpsEnabled()) {
-                setupLocationUpdates()
-            } else {
-                showGpsDisabledDialog()
-            }
+            setupLocationUpdates()
         } else {
             requestPermissionLauncher.launch(
                 arrayOf(
@@ -313,6 +374,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun hasLocationPermission() = ContextCompat.checkSelfPermission(
         this, Manifest.permission.ACCESS_FINE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED && ContextCompat.checkSelfPermission(
+        this, Manifest.permission.ACCESS_COARSE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
 
     override fun onResume() {
@@ -327,6 +390,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         super.onPause()
         binding.mapView.onPause()
         locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
+        handler.removeCallbacksAndMessages(null)
     }
 
     override fun onDestroy() {
@@ -334,6 +398,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding.mapView.onDestroy()
         pulseAnimator?.cancel()
         locationCallback = null
+        cancellationTokenSource.cancel()
     }
 
     override fun onLowMemory() {
