@@ -1,51 +1,52 @@
 package com.example.locateme
 
 import android.Manifest
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
-import android.content.Intent
+import android.content.*
 import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.Location
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Looper
 import android.provider.Settings
 import android.view.View
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.AlphaAnimation
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.example.locateme.databinding.ActivityMainBinding
-import com.google.android.gms.location.CurrentLocationRequest
-import com.google.android.gms.location.FusedLocationProviderClient
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
+import com.google.android.gms.location.*
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
-import com.google.android.gms.maps.SupportMapFragment
 import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.Snackbar
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.*
 
-/**
- * Senior-level Implementation: Google Maps Location App.
- * Handles permissions, fallback location fetching (emulator-friendly),
- * reverse geocoding, and modern Material 3 UI.
- */
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var mMap: GoogleMap? = null
+    private var currentMarker: Marker? = null
+    private var pulseAnimator: ObjectAnimator? = null
+    private var locationCallback: LocationCallback? = null
+    private var lastLocation: Location? = null
 
-    // Register permission launcher using modern Activity Result API
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -53,11 +54,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val coarseGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
 
         if (fineGranted || coarseGranted) {
-            setupLocationOnMap()
-            fetchLocation()
+            startLocationProcess()
         } else {
-            setLoading(false)
-            handlePermissionDenial()
+            showPermissionSnackBar()
         }
     }
 
@@ -67,7 +66,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         enableEdgeToEdge()
         setContentView(binding.root)
 
-        // Adjust layout for system window insets
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
@@ -76,172 +74,275 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        // Initialize Map Fragment
-        val mapFragment = supportFragmentManager.findFragmentById(R.id.map) as SupportMapFragment
-        mapFragment.getMapAsync(this)
+        binding.mapView.onCreate(savedInstanceState)
+        binding.mapView.getMapAsync(this)
 
         binding.btnRefresh.setOnClickListener {
-            fetchLocationWithCheck()
+            fetchLocation()
+        }
+
+        binding.btnShare.setOnClickListener {
+            shareLocation()
+        }
+
+        setupLongClickToCopy()
+        startPulseAnimation()
+        
+        // Hide location card initially for fade-in effect
+        binding.locationCard.visibility = View.INVISIBLE
+    }
+
+    private fun setupLongClickToCopy() {
+        val longClickListener = View.OnLongClickListener { view ->
+            val textToCopy = when (view.id) {
+                R.id.tvLatChip -> binding.tvLatChip.text.toString()
+                R.id.tvLngChip -> binding.tvLngChip.text.toString()
+                else -> ""
+            }
+            if (textToCopy.isNotEmpty()) {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = ClipData.newPlainText("Location Coordinate", textToCopy)
+                clipboard.setPrimaryClip(clip)
+                Toast.makeText(this, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show()
+            }
+            true
+        }
+        binding.tvLatChip.setOnLongClickListener(longClickListener)
+        binding.tvLngChip.setOnLongClickListener(longClickListener)
+    }
+
+    private fun shareLocation() {
+        lastLocation?.let { location ->
+            val placeName = binding.tvPlaceName.text.toString()
+            val shareText = getString(
+                R.string.share_location_text,
+                placeName,
+                location.latitude,
+                location.longitude
+            )
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, shareText)
+            }
+            startActivity(Intent.createChooser(intent, getString(R.string.share_via)))
+        } ?: run {
+            Toast.makeText(this, "Location not available to share", Toast.LENGTH_SHORT).show()
         }
     }
 
     override fun onMapReady(googleMap: GoogleMap) {
         mMap = googleMap
-        mMap?.uiSettings?.isZoomControlsEnabled = true
+        mMap?.uiSettings?.isZoomControlsEnabled = false
         mMap?.uiSettings?.isMyLocationButtonEnabled = true
-        
-        setupLocationOnMap()
-        fetchLocationWithCheck()
+        startLocationProcess()
     }
 
-    /**
-     * Enables the Blue Dot (My Location) layer on the map if permission is granted.
-     */
-    @SuppressLint("MissingPermission")
-    private fun setupLocationOnMap() {
-        if (hasLocationPermission()) {
-            mMap?.isMyLocationEnabled = true
+    private fun startLocationProcess() {
+        if (!isGpsEnabled()) {
+            showGpsDisabledDialog()
+            return
         }
-    }
 
-    private fun fetchLocationWithCheck() {
-        setLoading(true)
-        when {
-            hasLocationPermission() -> fetchLocation()
-            shouldShowRationale() -> showRationaleDialog()
-            else -> requestPermissionLauncher.launch(
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (hasLocationPermission()) {
+            setupLocationUpdates()
+        } else {
+            requestPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
             )
         }
     }
 
-    /**
-     * Logic to retrieve location:
-     * 1. Try lastLocation (fastest, cached).
-     * 2. If null (common in emulators), use getCurrentLocation (fresh fix).
-     */
     @SuppressLint("MissingPermission")
-    private fun fetchLocation() {
-        fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-            if (location != null) {
-                onLocationSuccess(location)
-            } else {
-                requestFreshLocation()
+    private fun setupLocationUpdates() {
+        try {
+            setLoadingState(true)
+            
+            fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+                location?.let { onLocationReceived(it) }
             }
-        }.addOnFailureListener {
-            requestFreshLocation()
-        }
-    }
 
-    @SuppressLint("MissingPermission")
-    private fun requestFreshLocation() {
-        val request = CurrentLocationRequest.Builder()
-            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
-            .build()
+            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5000)
+                .setMinUpdateIntervalMillis(2000)
+                .build()
 
-        fusedLocationClient.getCurrentLocation(request, null)
-            .addOnSuccessListener { location ->
-                if (location != null) {
-                    onLocationSuccess(location)
-                } else {
-                    setLoading(false)
-                    binding.tvAddress.text = "Unable to find location. Is GPS on?"
+            locationCallback = object : LocationCallback() {
+                override fun onLocationResult(locationResult: LocationResult) {
+                    for (location in locationResult.locations) {
+                        onLocationReceived(location)
+                    }
+                    setLoadingState(false)
                 }
             }
-            .addOnFailureListener { e ->
-                setLoading(false)
-                Toast.makeText(this, "Error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
-            }
-    }
 
-    private fun onLocationSuccess(location: Location) {
-        setLoading(false)
-        val latLng = LatLng(location.latitude, location.longitude)
-
-        // Update Map: Marker and Camera
-        mMap?.apply {
-            clear()
-            addMarker(MarkerOptions().position(latLng).title("You are here"))
-            animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 16f))
+            fusedLocationClient.requestLocationUpdates(
+                locationRequest,
+                locationCallback!!,
+                Looper.getMainLooper()
+            )
+        } catch (e: Exception) {
+            setLoadingState(false)
+            e.printStackTrace()
         }
-
-        // Update Timestamp
-        val sdf = SimpleDateFormat("hh:mm:ss a, dd MMM yyyy", Locale.getDefault())
-        binding.tvTimestamp.text = sdf.format(Date(location.time))
-
-        // Get Address Asynchronously
-        getAddressFromLocation(location)
     }
 
-    /**
-     * Uses Geocoder to find readable address from coordinates.
-     * Wrapped in a thread as getFromLocation is a network/blocking call.
-     */
-    private fun getAddressFromLocation(location: Location) {
+    private fun onLocationReceived(location: Location) {
+        try {
+            lastLocation = location
+            updateGpsStatus(true)
+            
+            if (binding.locationCard.visibility != View.VISIBLE) {
+                binding.locationCard.visibility = View.VISIBLE
+                val fadeIn = AlphaAnimation(0f, 1f).apply { duration = 500 }
+                binding.locationCard.startAnimation(fadeIn)
+            }
+
+            val latLng = LatLng(location.latitude, location.longitude)
+
+            binding.tvLatChip.text = "Lat: %.6f".format(location.latitude)
+            binding.tvLngChip.text = "Lng: %.6f".format(location.longitude)
+
+            val sdf = SimpleDateFormat("hh:mm:ss a, dd MMM yyyy", Locale.getDefault())
+            binding.tvTimestamp.text = "Last updated: ${sdf.format(Date(location.time))}"
+
+            mMap?.apply {
+                currentMarker?.remove()
+                currentMarker = addMarker(MarkerOptions().position(latLng).title("You are here"))
+                animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 15f))
+            }
+
+            reverseGeocode(location)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun reverseGeocode(location: Location) {
         val geocoder = Geocoder(this, Locale.getDefault())
-        
+        binding.tvPlaceName.text = getString(R.string.fetching_place_name)
+
         Thread {
             try {
-                // Note: Using deprecated getFromLocation for broad compatibility. 
-                // In a production app targeting API 33+, use the callback-based version.
                 val addresses = geocoder.getFromLocation(location.latitude, location.longitude, 1)
-                
                 runOnUiThread {
                     if (!addresses.isNullOrEmpty()) {
-                        val address = addresses[0]
-                        val addressDetails = "${address.locality}, ${address.adminArea}, ${address.countryName}"
-                        binding.tvAddress.text = addressDetails
+                        binding.tvPlaceName.text = addresses[0].getAddressLine(0)
                     } else {
-                        binding.tvAddress.text = "Address not available"
+                        binding.tvPlaceName.text = getString(R.string.unknown_location)
                     }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    binding.tvAddress.text = "Geocoder Service Unavailable"
+                    binding.tvPlaceName.text = getString(R.string.geocoder_error)
                 }
             }
         }.start()
     }
 
-    private fun setLoading(isLoading: Boolean) {
-        binding.btnRefresh.isEnabled = !isLoading
-        binding.progressBar.visibility = if (isLoading) View.VISIBLE else View.INVISIBLE
+    private fun fetchLocation() {
+        if (hasLocationPermission()) {
+            if (isGpsEnabled()) {
+                setupLocationUpdates()
+            } else {
+                showGpsDisabledDialog()
+            }
+        } else {
+            requestPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
     }
 
-    // Permission Helpers
+    private fun setLoadingState(isLoading: Boolean) {
+        if (isLoading) {
+            binding.btnRefresh.text = ""
+            binding.btnRefresh.icon = null
+            binding.progressBar.visibility = View.VISIBLE
+        } else {
+            binding.btnRefresh.text = getString(R.string.btn_refresh)
+            binding.btnRefresh.setIconResource(android.R.drawable.ic_menu_rotate)
+            binding.progressBar.visibility = View.GONE
+        }
+    }
+
+    private fun isGpsEnabled(): Boolean {
+        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+    }
+
+    private fun showGpsDisabledDialog() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.enable_gps_title)
+            .setMessage(R.string.enable_gps_message)
+            .setPositiveButton(R.string.settings) { _, _ ->
+                startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showPermissionSnackBar() {
+        Snackbar.make(binding.root, R.string.location_permission_required, Snackbar.LENGTH_LONG)
+            .setAction(R.string.settings) {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                intent.data = Uri.fromParts("package", packageName, null)
+                startActivity(intent)
+            }.show()
+    }
+
+    private fun updateGpsStatus(isActive: Boolean) {
+        binding.gpsStatusDot.setBackgroundResource(
+            if (isActive) R.drawable.dot_indicator_green else R.drawable.dot_indicator_red
+        )
+    }
+
+    private fun startPulseAnimation() {
+        pulseAnimator = ObjectAnimator.ofFloat(binding.gpsStatusDot, View.ALPHA, 1f, 0.3f).apply {
+            duration = 800
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = AccelerateDecelerateInterpolator()
+            start()
+        }
+    }
+
     private fun hasLocationPermission() = ContextCompat.checkSelfPermission(
         this, Manifest.permission.ACCESS_FINE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
 
-    private fun shouldShowRationale() = ActivityCompat.shouldShowRequestPermissionRationale(
-        this, Manifest.permission.ACCESS_FINE_LOCATION
-    )
-
-    private fun showRationaleDialog() {
-        MaterialAlertDialogBuilder(this)
-            .setTitle("Permission Needed")
-            .setMessage("Location access is required to show your position on the map.")
-            .setPositiveButton("Grant") { _, _ ->
-                requestPermissionLauncher.launch(
-                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
-                )
-            }
-            .setNegativeButton("Cancel") { _, _ -> setLoading(false) }
-            .show()
+    override fun onResume() {
+        super.onResume()
+        binding.mapView.onResume()
+        if (hasLocationPermission() && isGpsEnabled()) {
+            setupLocationUpdates()
+        }
     }
 
-    private fun handlePermissionDenial() {
-        if (!shouldShowRationale()) {
-            MaterialAlertDialogBuilder(this)
-                .setTitle("Permission Required")
-                .setMessage("Permission was permanently denied. Enable it in settings to use the map.")
-                .setPositiveButton("Settings") { _, _ ->
-                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                        data = Uri.fromParts("package", packageName, null)
-                    })
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-        }
+    override fun onPause() {
+        super.onPause()
+        binding.mapView.onPause()
+        locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        binding.mapView.onDestroy()
+        pulseAnimator?.cancel()
+        locationCallback = null
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        binding.mapView.onLowMemory()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        binding.mapView.onSaveInstanceState(outState)
     }
 }

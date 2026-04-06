@@ -1,9 +1,18 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
     <style name="Base.Theme.LocateMe" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your light theme here. -->
-        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+        <item name="android:statusBarColor">#0D0221</item>
+        <item name="android:navigationBarColor">#0D0221</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 
     <style name="Theme.LocateMe" parent="Base.Theme.LocateMe" />
+
+    <style name="Theme.LocateMe.Splash" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:statusBarColor">#0D0221</item>
+        <item name="android:navigationBarColor">#0D0221</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

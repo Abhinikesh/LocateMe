@@ -2,4 +2,12 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="deep_purple_start">#0D0221</color>
+    <color name="deep_purple_end">#2D0D5C</color>
+    <color name="card_bg">#1E0A3C</color>
+    <color name="light_purple">#B39DDB</color>
+    <color name="accent_purple_start">#6A0DAD</color>
+    <color name="accent_purple_end">#9B30FF</color>
+    <color name="gps_green">#00C853</color>
+    <color name="gps_red">#FF1744</color>
 </resources>
